@@ -345,6 +345,28 @@ def save_baseline(state):
     BASELINE_PATH.write_text(B64_MARKER + "\n" + wrapped + "\n")
 
 
+def _doc_in_scope(path):
+    """True if doc_files() would look at this path from the current cwd. Project
+    CLAUDE.md / skills are cwd-relative, so a baseline taken in another project
+    holds docs this run can't see: they are out of scope, not REMOVED."""
+    p = Path(path)
+    cwd = Path.cwd()
+    for base in (HOME / ".claude", cwd / ".claude"):
+        if p.is_relative_to(base):
+            return True
+    return p == cwd / "CLAUDE.md"
+
+
+def merge_out_of_scope_docs(state, baseline):
+    """Keep other projects' docs when re-baselining, so `--baseline` run from one
+    project doesn't silently drop trust (and drift detection) for the others."""
+    if baseline and not _baseline_is_stale(baseline):
+        for k, v in (baseline.get("docs") or {}).items():
+            if not _doc_in_scope(k):
+                state["docs"].setdefault(k, v)
+    return state
+
+
 def diff_baseline(state, baseline):
     """Return list of drift findings (new/changed hooks, mcp, docs)."""
     drift = []
@@ -371,6 +393,8 @@ def diff_baseline(state, baseline):
         # a NEW/CHANGED-only diff would miss it entirely.
         for k in old:
             if k not in cur:
+                if section == "docs" and not _doc_in_scope(k):
+                    continue
                 if "sentinel" in k.lower():
                     drift.append(f"REMOVED {label}: SENTINEL PROTECTION MAY BE DISABLED: {k}")
                 else:
@@ -500,7 +524,7 @@ def main(argv=None):
         return 0
 
     if args.baseline:
-        save_baseline(current_state())
+        save_baseline(merge_out_of_scope_docs(current_state(), load_baseline()))
         print(f"✅ Trusted baseline written to {BASELINE_PATH}")
         return 0
 
